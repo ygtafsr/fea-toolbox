@@ -1,0 +1,7 @@
+ansys-dpf-core==0.16.3
+ansys-mapdl-core==0.74.1
+ansys-mapdl-reader==0.56.0
+matplotlib==3.11.2
+numpy==2.5.4
+pandas==3.0.6
+vtk==9.7.1

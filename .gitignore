@@ -2,3 +2,8 @@ TODO
 *.cdb
 *.CDB
 *.inp
+*.rst
+.editorconfig
+pyrightconfig.json
+# Python packaging artifacts
+*.egg-info/
