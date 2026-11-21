@@ -1,6 +1,13 @@
 
-# VTK native OpenGL backend
+from __future__ import annotations
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from featoolbox.mesh import Mesh
+    from vtkmodules.util.data_model import MultiBlockDataSet, PolyData
 
+import numpy as np
+
+# VTK native OpenGL backend
 import vtkmodules.vtkInteractionStyle
 import vtkmodules.vtkRenderingOpenGL2
 from vtkmodules.vtkInteractionStyle import vtkInteractorStyleSwitch #noqa
@@ -8,10 +15,13 @@ from vtkmodules.vtkInteractionStyle import vtkInteractorStyleSwitch #noqa
 from vtkmodules.vtkRenderingCore import (
     vtkActor,
     vtkDataSetMapper,
+    vtkPolyDataMapper,
+    vtkCompositePolyDataMapper,
     vtkRenderer,
     vtkRenderWindow,
     vtkRenderWindowInteractor,
     vtkCamera,
+    vtkProperty,
     vtkTextProperty
 )
 from vtkmodules.vtkInteractionStyle import (
@@ -31,6 +41,7 @@ from vtkmodules.vtkCommonCore import (
     vtkLookupTable,
     vtkCommand
 )
+from vtkmodules.vtkCommonDataModel import vtkDataSet
 from vtkmodules.util import (
     vtkConstants,
     colors
@@ -111,39 +122,49 @@ class CustomInteractor(vtkInteractorStyleRubberBand3D):
 
     def on_right_button_down(self):
         pass
-        
+
+
 
 class Scene():
+    """
+    Scene = vtkRenderWindow
+    """
 
     def __init__(self):
 
-        self.renderer = vtkRenderer()
-        self.renderer.background = colors.white   
-
-        #self.camera = vtkCamera()  
-        #self.camera.parallel_projection = True
-        #self.camera.parallel_scale = 2
-        #self.renderer.active_camera = self.camera
-        self.renderer.active_camera.parallel_projection = True
-        self.renderer.active_camera.parallel_scale = 2
-
         self.render_window = vtkRenderWindow(size=(1000, 700))
-        self.render_window.AddRenderer(self.renderer)
-
-        self.interactor = vtkRenderWindowInteractor(
-            track_interactor_observer_instances=True
-        )
-        self.interactor.SetRenderWindow(self.render_window)
-
         self.render_window.SetOffScreenRendering(1) # Important for in-browser rendering !!!!
                                                     # In case remote rendering.
+        self.lookup_table: vtkLookupTable | None = None
 
+        self.interactor = vtkRenderWindowInteractor(
+        #    track_interactor_observer_instances=True
+        )
+        self.interactor.render_window = self.render_window
         style = CustomInteractor()
         self.interactor.interactor_style = style
 
         #self.scalar_bar = self.add_scalar_bar((0,1))
         #self.scalar_bar.visibility=False
-        self.render_window.AddObserver(vtkCommand.WindowResizeEvent, self._on_window_resize)
+        #self.render_window.AddObserver(vtkCommand.WindowResizeEvent, self._on_window_resize)
+
+    def add_renderer(self):
+        """
+        Create new renderer. Set the lastly created renderer as current.
+        """
+        self.renderer = vtkRenderer()
+        self.renderer.background = colors.white   
+        self.renderer.active_camera.parallel_projection = True
+        self.renderer.active_camera.parallel_scale = 2
+
+        #camera = vtkCamera()  
+        #camera.parallel_projection = True
+        #camera.parallel_scale = 2
+        #renderer.active_camera = camera
+
+        self.render_window.AddRenderer(self.renderer)
+
+    def add_axis_actor(self):
 
         ## TEST: Add Axis Actor
         self.axes = vtkAxesActor(shaft_type=vtkAxesActor.LINE_SHAFT, 
@@ -176,28 +197,23 @@ class Scene():
         self.orientation_widget = vtkCameraOrientationWidget(parent_renderer=self.renderer)
         self.orientation_widget.On()
 
-        self.scalar_bar = self.add_scalar_bar((0,1))
-
-        #self.renderer.ResetCamera()
-
-    def _on_window_resize(self, caller, event) -> None:
-        self.scalar_bar.update_position(
-            self.renderer.GetOrigin()[1],
-            self.renderer.GetSize()[1],
-        )
+    def add_orientation_cube(self, renderer : vtkRenderer):
+        pass
 
     def add_scalar_bar(self, scalar_range):
 
         #### Lookup Table ###
         lut = vtkLookupTable(number_of_table_values=5,
-                                  range=scalar_range,
-                                  )
+                             range=scalar_range,
+                            )
+        
         lut.SetTableValue(0, 0.0, 0.0, 1.0, 1.0)  # blue
         lut.SetTableValue(1, 0.0, 1.0, 1.0, 1.0)  # cyan
         lut.SetTableValue(2, 0.0, 1.0, 0.0, 1.0)  # green
         lut.SetTableValue(3, 1.0, 1.0, 0.0, 1.0)  # yellow
         lut.SetTableValue(4, 1.0, 0.0, 0.0, 1.0)  # red
         lut.Build()
+        self.lookup_table = lut
 
         scalar_bar = ScalarBar(lut)
         self.renderer.AddActor(scalar_bar)
@@ -209,13 +225,141 @@ class Scene():
         
         return scalar_bar
 
+    def add_mesh(self, mesh : Mesh, 
+                       wireframe : bool = False,
+                       deform : bool = False,
+                       scale_factor : float = 1.0,
+                       ):
 
-## TEST ##
-def main():
-    scene = Scene()
-    scene.scalar_bar.visibility=True
-    scene.render_window.SetOffScreenRendering(0)
-    scene.render_window.Render()
-    scene.interactor.Start()
+        # Mesh can deform without result
+        if deform:
+            if "Displacement" in mesh.vector_result_names(association="Nodal"):
+                mbds = mesh.warp_vector(scale_factor)
+            else: raise ValueError("There is no Nodal Displacement Data!")
+        else: 
+            mbds = mesh.assembly
 
-if __name__ == "__main__": main()
+        # Add mesh components to the last renderer
+        for idx in range(mbds.number_of_blocks):
+
+            component = mbds.GetBlock(idx) # ugrid
+            mapper = vtkDataSetMapper(input_data=component)
+            mapper.scalar_visibility = False
+            
+            prop = vtkProperty()
+            prop.edge_color = colors.black
+            prop.color = component.field_data['Color']
+            prop.line_width = 0.5
+            prop.edge_visibility = bool(component.field_data['Edge Visibility'])
+            prop.opacity = float(component.field_data['Opacity'][0])
+
+            actor = vtkActor(mapper=mapper)
+            actor.property = prop
+            self.renderer.AddActor(actor)
+
+    def add_result_mesh(self, 
+                        mesh : Mesh,
+                        deform : bool = True,
+                        scale_factor : float = 1.0,
+                        ):
+
+        arrays = mesh.active_scalars_array
+        self.add_scalar_bar((float(np.min(arrays)), float(np.max(arrays))))
+
+        if deform:
+            if "Displacement" in mesh.vector_result_names(association="Nodal"):
+                mbds = mesh.warp_vector(scale_factor)
+            else: raise ValueError("There is no Nodal Displacement Data!")
+        else: 
+            mbds = mesh.assembly
+
+        for idx in range(mbds.number_of_blocks):
+
+            component = mbds.GetBlock(idx) # ugrid
+            mapper = vtkDataSetMapper(input_data=component)
+
+            prop = vtkProperty()
+            prop.edge_visibility = True
+            prop.edge_color = colors.black
+            prop.line_width = 0.5
+
+            if mesh._active_scalars_info is not None:
+
+                if mesh._active_scalars_info[1] == "Elemental":
+                    mapper.SetScalarModeToUseCellData()
+                elif mesh._active_scalars_info[1] == "Nodal":
+                    mapper.SetScalarModeToUsePointData()
+
+            if mesh._active_tensors_info is not None:
+                pass
+ 
+            mapper.lookup_table = self.lookup_table
+            mapper.use_lookup_table_scalar_range = True
+            mapper.scalar_visibility = True
+
+            actor = vtkActor(mapper=mapper)
+            actor.property = prop
+            self.renderer.AddActor(actor)
+
+    def add_undeformed_mesh(self, mesh : Mesh):
+        # Add undeformed mesh components to the last renderer
+        # Shows components transparent and grey
+
+        # implement a surface filter for MultiBlockDataSet!!!
+
+        for idx in range(mesh.assembly.number_of_blocks):
+            component = mesh.assembly.GetBlock(idx) # ugrid
+            mapper = vtkDataSetMapper(input_data=component)
+            prop = vtkProperty()
+            prop.color = colors.grey
+            prop.edge_visibility = False
+            prop.opacity = 0.3
+            actor = vtkActor(mapper=mapper)
+            actor.property = prop
+            self.renderer.AddActor(actor)
+        
+    def add_mesh_outline(self, mesh : Mesh):
+
+        feature_edges = mesh.feature_edges()
+        outline_mapper = vtkPolyDataMapper(input_connection=feature_edges.output_port)
+        outline_actor = vtkActor(mapper=outline_mapper)
+        outline_actor.property.color = colors.black
+        self.renderer.AddActor(outline_actor)
+
+    def add_vector_glyphs(self, mesh : Mesh, scale_factor : float = 1.0):
+
+        # Method-1 :: Use vtkGlyph3D iteratively.
+        if mesh._active_vectors_info is not None:
+
+            glyphs = mesh.glyph_filter(scale_factor)
+
+            for glyph in glyphs:
+                poly_mapper = vtkPolyDataMapper(input_connection=glyph.GetOutputPort())
+                actor = vtkActor(mapper=poly_mapper)
+                self.renderer.AddActor(actor)
+
+        """
+        # Method-2 :: Use vtkGlyph3DMapper directly. (Recommended for large meshes)
+        # It uses GPU with higher performance.
+        # But created some visual issues here.
+        glyph_mapper = mesh.glyph_filter()
+        glyph_actor = vtkActor(mapper=glyph_mapper)
+        glyph_actor.property.color = (1.0, 0.0, 0.0)
+        self.renderer.AddActor(glyph_actor)
+        """
+
+    def add_coordinate_system(self, mesh : Mesh):
+
+        cs_manager = mesh._cs_manager
+
+        for cs_view in cs_manager.views.values():
+            self.renderer.AddActor(cs_view.axes)
+
+    def plot(self):
+
+        self.renderer.ResetCamera()
+        self.renderer.ResetCameraClippingRange()
+        self.render_window.Render()
+        
+
+

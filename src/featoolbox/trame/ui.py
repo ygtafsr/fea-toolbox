@@ -8,13 +8,14 @@ from featoolbox.trame.client_event import EventListeners
 
 def build_ui(self):
 
+    """    
     def print_object_manager(local_view):
             object_manager = local_view.object_manager
             for wasm_id in sorted(object_manager.GetAllDependencies(object_manager.ROOT())):
                 vtk_object = object_manager.GetObjectAtId(wasm_id)
                 if vtk_object is not None:
                     object_name = vtk_object.GetObjectName() or vtk_object.GetClassName()
-                    print(f"({wasm_id}) ({object_name})")
+                    print(f"({wasm_id}) ({object_name})")"""
 
     # Must be VAppLayout to be able to work with jupyter!
     with VAppLayout(self.server) as self.ui:
@@ -25,6 +26,7 @@ def build_ui(self):
 
             with html.Div(id="local-view-container",
                           style="width: 100%; height: 100%; min-height: 0;"):
+                
                 with vtklocal.LocalView(self.vtk_scene.render_window,
                                         ctx_name="view",
                                         style="width: 100%; height: 100%;",
@@ -36,14 +38,14 @@ def build_ui(self):
 
                     #listeners = EventListeners(self.local_view)
 
-                    self.axes = self.local_view.register_vtk_object(self.vtk_scene.axes.GetXAxisCaptionActor2D().GetCaptionTextProperty())
+                    #self.axes = self.local_view.register_vtk_object(self.vtk_scene.axes.GetXAxisCaptionActor2D().GetCaptionTextProperty())
                     #local_view.register_vtk_object(self.vtk_scene.axes.x_axis_caption_actor2d.caption_text_property) #vtkTextProperty
                     #local_view.register_vtk_object(self.vtk_scene.prop_axis_text) #vtkTextProperty
                     #orient_mark = local_view.register_vtk_object(self.vtk_scene.orient_marker)
 
                     self.ctrl.view_reset_camera = self.local_view.reset_camera
 
-                    wasm_id = self.local_view.get_wasm_id(self.vtk_scene.render_window)
+                    #wasm_id = self.local_view.get_wasm_id(self.vtk_scene.render_window)
 
                     """self.local_view.listeners = (
                         "wasm_listeners",
@@ -62,7 +64,7 @@ def build_ui(self):
                     # => reserve state variable for widget update
                     self.state.window_size = None"""
 
-                    self.local_view.eval({
+                    """self.local_view.eval({
                                 "window_size": {
 #                                    "origin": (wasm_id, "GetOrigin"),
                                     "size": (wasm_id, "GetSize"),
@@ -70,7 +72,7 @@ def build_ui(self):
                             })
 
                     self.state.window_size = None
-                    self.state.size = None
+                    self.state.size = None"""
 
 
 

@@ -13,27 +13,18 @@ to element creation for dedicated attributes that are in their default
 @dataclass
 class Attribute:
     midx : int
-    type : Literal["Mat", "Type", "Real", "Csys", "Secn"]
     
 @dataclass
 class Etype(Attribute):
-    midx : int = 0  # Element type index (Same as in solver)
-    type : Literal["Mat", "Type", "Real", "Csys", "Secn"] = "Type"
-    name : str = ''
-    ignore_at_execution : bool = False
-    show_in_model_tree = True
-    
+    midx : int  # Element type index (Same as in solver)
+
 @dataclass
 class Real(Attribute):
-    midx : int = 0
-    type : Literal["Mat", "Type", "Real", "Csys", "Secn"] = "Real"
-    ignore_at_execution : bool = False
+    midx : int
 
 @dataclass
 class Mat(Attribute):
-    midx : int = 0
-    type : Literal["Mat", "Type", "Real", "Csys", "Secn"] = "Mat"
-    ignore_at_execution : bool = False
+    midx : int
 
 @dataclass
 class Section(Attribute):
@@ -44,6 +35,6 @@ class Section(Attribute):
     """
     midx : int = 0
     type : Literal["Mat", "Type", "Real", "Csys", "Secn"] = "Secn"
-    ignore_at_execution : bool = False
+
 
 

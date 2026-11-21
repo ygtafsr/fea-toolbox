@@ -7,7 +7,9 @@ from vtkmodules.vtkIOExodus import vtkExodusIIReader
 from vtkmodules.vtkCommonDataModel import (
     vtkCompositeDataSet,
     vtkDataObjectTreeIterator,
+    vtkDataSet,
     vtkUnstructuredGrid,
+    vtkMultiBlockDataSet
 )
 
 from vtkmodules.vtkCommonCore import vtkIdList
@@ -16,18 +18,154 @@ from vtkmodules.vtkFiltersCore import (
     vtkExtractCells,
 )
 
+class ExodusIIReader:
+    """
+    vtkExoduesIIReader Usage Details:
+    - UpdateInformation() reads file metadata, such as the available set names, result-array names, 
+    and time steps. Use it before querying those details or choosing which sets and arrays to load. 
+    It does not build the full mesh output.
+    - Update() runs the reader to produce the requested mesh and data, using the settings you chose. 
+    Then you can inspect GetOutput()
+    """
 
-def read_exodusII(file_path: Path) -> Mesh:
-    vtk_reader = vtkExodusIIReader()
-    vtk_reader.SetFileName(str(file_path))
-    vtk_reader.GenerateGlobalElementIdArrayOn()
-    vtk_reader.GenerateGlobalNodeIdArrayOn()
-    vtk_reader.UpdateInformation()
-    vtk_reader.Update()
+    def __init__(self, filePath : Path) -> None:
 
-    mesh = Mesh()
-    element_blocks = vtk_reader.GetOutputDataObject(0).GetBlock(0)  # Get Exodus Element Blocks
-    iterator = vtkDataObjectTreeIterator(data_set=element_blocks)
+        self.file_path = filePath
+        self._config_read()
+
+
+    def _config_read(self,
+                     material_arrays : bool = False) -> None:
+        self.vtk_reader = vtkExodusIIReader()
+        self.vtk_reader.SetFileName(str(self.file_path))
+
+        # Ask the reader to include global IDs in the output.
+        self.vtk_reader.generate_global_element_id_array = True
+        self.vtk_reader.generate_global_node_id_array = True
+
+        # Tell the reader to include the named element sets in its output.
+        """element_set_names = [
+            self.vtk_reader.GetElementSetArrayName(i)
+            for i in range(self.vtk_reader.GetNumberOfElementSetArrays())
+        ]
+        for name in element_set_names:
+                    self.vtk_reader.SetElementSetArrayStatus(name, 1)"""
+        #self.vtk_reader.SetAllArrayStatus(otype=vtkExodusIIReader.ELEM_BLOCK_ATTRIB, status=1)
+
+        self.vtk_reader.UpdateInformation()
+        for i in range(self.vtk_reader.GetNumberOfNodeSetArrays()):
+            name = self.vtk_reader.GetNodeSetArrayName(i)
+            self.vtk_reader.SetNodeSetArrayStatus(name, 1)
+        self.vtk_reader.Update()
+
+
+        self.root = self.vtk_reader.GetOutput()
+        pass
+
+    def block_name(self, blocks, i):
+        metadata = blocks.GetMetaData(i)
+        key = vtkCompositeDataSet.NAME()
+        return metadata.Get(key) if metadata and metadata.Has(key) else str(i)
+
+    @property
+    def global_element_ids(self):
+        return 
+
+    @property
+    def node_sets(self) -> dict[str, list[int]]:
+        node_set_dict: dict[str, list[int]] = {}
+        node_set_blocks = vtkMultiBlockDataSet.SafeDownCast(self.root.GetBlock(7)) # 7 = Node Sets
+        if node_set_blocks is None:
+            raise RuntimeError("Exodus output does not contain Node Sets.")
+
+        for i in range(node_set_blocks.number_of_blocks):
+            grid = node_set_blocks.GetBlock(i)
+            name = self.block_name(node_set_blocks, i)
+            if grid is None:
+                continue
+            if not isinstance(grid, vtkUnstructuredGrid):
+                raise RuntimeError(f"Node set {name} is not an unstructured grid.")
+
+            global_node_ids = grid.point_data["GlobalNodeId"]
+            if global_node_ids is None:
+                raise RuntimeError(f"Node set {name} is missing GlobalNodeId.")
+            node_set_dict[name] = [
+                int(global_node_ids.GetTuple1(point_id))
+                for point_id in range(grid.number_of_points)
+            ]
+        return node_set_dict
+
+    def element_sets(self) -> list:
+        element_set_blocks = vtkMultiBlockDataSet.SafeDownCast(self.root.GetBlock(3)) # 3 = Element Sets
+        for i in range(element_set_blocks.GetNumberOfBlocks()):
+            grid = element_set_blocks.GetBlock(i)
+            if grid is not None:
+                print(block_name(element_set_blocks, i), grid.GetNumberOfCells())
+
+    @property
+    def mesh(self) -> Mesh:
+        """
+        Creates a Mesh Object.
+        Establishes Assembly by Exodus Element Blocks.
+        Setup Mesh's Node Sets, Element Sets dicts.
+        """
+        # Create a Mesh Object
+        mesh = Mesh()
+
+        # Create Components from Exodus Element Blocks
+        element_blocks = self.root.GetBlock(0) # 1 = Element Sets
+        iterator = vtkDataObjectTreeIterator(data_set=element_blocks)
+        iterator.VisitOnlyLeavesOn()
+        iterator.InitTraversal()
+        while not iterator.IsDoneWithTraversal():
+            source_grid = iterator.GetCurrentDataObject()
+            metadata = iterator.GetCurrentMetaData()
+            if not isinstance(source_grid, vtkUnstructuredGrid):
+                raise RuntimeError("Exodus element block is not an unstructured grid.")
+            if metadata is None or not metadata.Has(vtkCompositeDataSet.NAME()):    # Get Element Block Name
+                raise RuntimeError("Exodus element block is missing its name.")
+            source_name = metadata.Get(vtkCompositeDataSet.NAME())
+
+            #region_id = source_grid.GetCellData().GetArray("RegionId")
+            mesh.insert(
+                name=f"{source_name}",
+                ugrid=source_grid,
+            )
+            iterator.GoToNextItem()
+
+        # Setup Node Sets
+        mesh.node_sets = self.node_sets
+
+        return mesh
+
+    def info(self):
+        iterator = vtkDataObjectTreeIterator(data_set=self.root, visit_only_leaves=False)
+        iterator.InitTraversal()
+        while not iterator.IsDoneWithTraversal():
+            block = iterator.GetCurrentDataObject()
+            metadata = iterator.GetCurrentMetaData()
+            name = (
+                metadata.Get(vtkCompositeDataSet.NAME())
+                if metadata is not None
+                and metadata.Has(vtkCompositeDataSet.NAME())
+                else "<unnamed>"
+            )
+            if isinstance(block, vtkMultiBlockDataSet):
+                print(name)
+            if isinstance(block, vtkDataSet):
+                array_names = [
+                    attributes.GetArrayName(i)
+                    for attributes in (block.GetCellData(), block.GetPointData(), block.GetFieldData())
+                    for i in range(attributes.GetNumberOfArrays())
+                ]
+                print("\t", name, array_names)
+            iterator.GoToNextItem()
+
+
+
+
+def extract_by_connectivity(data_set):    # data_set : MultiBlockDataSet
+    iterator = vtkDataObjectTreeIterator(data_set)
     iterator.VisitOnlyLeavesOn()
     iterator.InitTraversal()
     # Iterate over ELement Blocks
@@ -74,95 +212,77 @@ def read_exodusII(file_path: Path) -> Mesh:
                     f"Failed to extract RegionId {region_id} from {source_name}."
                 )
 
-            mesh.add_block(
-                dataset=region_grid,
+            mesh.insert(
                 name=f"{source_name}_Region_{region_id}",
-                parent_name="Assembly",
+                ugrid=region_grid,
             )
 
         iterator.GoToNextItem()
 
     return mesh
 
+from pathlib import Path
+from featoolbox.mesh import Mesh
+from featoolbox.IO.exodus import ExodusIIReader
 
-
-
+import numpy as np
+from numpy.random import default_rng
+rng = default_rng()
 
 
 def main():
 
-    #file_path = Path(r"C:/Users/yigit/fea-toolbox/data/exodus/Clamped_Rod_Mesh-sets.ex2")
-    file_path = Path(r"C:\Users\yigit\fea-toolbox\data\exodus\Clamped_Rod_Mesh_abaqus.ex2")
-    mesh = read_exodusII(file_path)
-    mesh.print_blocks("Assembly")
-    mesh.plot()
+    file_path = Path(r"C:\Users\yigit\fea-toolbox\data\exodus\Clamped_Rod_Mesh_surf_test.ex2")
+    reader = ExodusIIReader(file_path)
+    mesh : Mesh = reader.mesh
+    reader.info()
 
+    # Random vector point data:
+    point_vectors = rng.uniform(low=-1.0, high=1.0, size=(mesh.number_of_points, 3))
+    mesh.add_nodal_result("Displacement", point_vectors)
 
-    """
-    # Element Blocks
-    object_type = vtkExodusIIReader.ELEM_BLOCK
-    for i in range(reader.GetNumberOfObjects(object_type)):
-        name = reader.GetObjectName(object_type, i)
-        object_id = reader.GetObjectId(object_type, i)
-        status = reader.GetObjectStatus(object_type, i)
-        print(i, name, object_id, status)
+    # Random scalar point data:
+    point_data = rng.integers(low=100, high=500, size=mesh.number_of_points)
+    mesh.add_nodal_result("nodal_data", point_data)
 
-    # Node sets
-    n_sets = reader.GetNumberOfNodeSetArrays()
-    print("Number of node sets:", n_sets)
+    # Random scalar cell data:
+    data = rng.integers(low=100, high=500, size=reader.mesh.number_of_cells)
+    mesh.add_elemental_result(name="elemental_data", data=data)
 
-    node_set_type = vtkExodusIIReader.NODE_SET
-    count=reader.GetNumberOfObjects(node_set_type)
-    for i in range(count):
-        name = reader.GetObjectName(node_set_type, i)
-        set_id = reader.GetObjectId(node_set_type, i)
-        n_entries = reader.GetNumberOfEntriesInObject(node_set_type, i)
-        print(f"{i}: {name}, ID={set_id}, entries={n_entries}")
+    mesh.active_scalar_result("elemental_data", "Elemental")
+    mesh.active_vector_result("Displacement", "Nodal")
 
-    # Element Sets
-    el_sets = reader.GetNumberOfElementSetArrays()
-    print("Number of element sets:", el_sets)
+    # Add user CS
+    """matrix = np.eye(4)
+    matrix[:3, :3] = np.array([
+        [0, -1, 0],
+        [1,  0, 0],
+        [0,  0, 1]
+    ])
+    matrix[:3, 3] = np.array([0, 0, 0])"""
 
-    elem_set_type = vtkExodusIIReader.ELEM_SET
-    for i in range(reader.GetNumberOfObjects(elem_set_type)):
-        print(
-            "Name:", reader.GetObjectName(elem_set_type, i),
-            "ID:", reader.GetObjectId(elem_set_type, i),
-            "Number of entries:",
-            reader.GetNumberOfEntriesInObject(elem_set_type, i),
-        )
+    from featoolbox.model import CoordinateSystem
 
-    # Assembly
-    assm_sets = reader.GetNumberOfElementSetArrays()
-    print("Number of assembly sets:", assm_sets)
+    cs_local = CoordinateSystem(
+        midx=1,
+        name="Local CS 1",
+        origin = np.array([0, 0, 0])
+    )
+    mesh.coordinate_system(cs_local)
 
-    el_blocks = mb.GetBlock(0)
-
-    iter = vtkDataObjectTreeIterator(data_set=mb)
-    iter.visit_only_leaves = False
-
-    iter.InitTraversal()
-    while not iter.IsDoneWithTraversal():
-        print(type(iter.current_data_object), iter.current_flat_index)
-        print(iter.current_meta_data.Get(vtkCompositeDataSet.NAME()))
-        iter.GoToNextItem()
-
-    # fied data:
-    fields = mb.GetBlock(0).GetBlock(0).field_data
-    for field in fields:
-        print(field)
-
-    #print(fields["ElementBlockIds"])
-    #print(fields["Title"].GetValue(0))
-
-    # cell data
-    celldata = mb.GetBlock(0).GetBlock(0).cell_data
-    for data in celldata:
-        print(data)
-
-    #print(mb.GetBlock(0).GetBlock(0).cell_data.global_ids) # First UnstructuredGrid
-    pass
+    cs_local_2 = CoordinateSystem(
+        midx=2,
+        name="Local CS 2",
+        origin = np.array([0, 10, 0]),
+        rot_x=45
+    )
+    mesh.coordinate_system(cs_local_2)
     
-    """
+    # print(mesh)
+    mesh.plot(show_results=False, 
+              deform=False, 
+              show_underformed=False,
+              show_coordinate_systems=True,
+    )
 
 if __name__ == "__main__": main()

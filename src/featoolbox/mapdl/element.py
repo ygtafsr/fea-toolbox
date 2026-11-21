@@ -5,6 +5,10 @@ from dataclasses import dataclass, fields
 from typing import Literal
 
 
+##################################
+### Structural Element Types
+##################################
+"""
 SOLID185_KEYOPT_MAPPING = {
     2 : ("technology", ("FULL INTEGRATION", "REDUCED INTEGRATION", "ENHANCED STRAIN", "SIMPLIFIED ENHANCED STRAIN")),
     3 : ("layer", ("LAYERED", "HOMOGENEOUS")),
@@ -16,7 +20,7 @@ SOLID185_KEYOPT_MAPPING = {
 
 @dataclass
 class Solid185(Etype):
-    """8-Node Structural Solid"""
+    #8-Node Structural Solid#
 
     name : str = "SOLID185"
 
@@ -41,7 +45,7 @@ class Solid185(Etype):
                                    "EXTRA"] = "BASIC"
 
     def get_keyopts(self) -> tuple: # ((keyopt_number, keyopt_value), ...)
-        """Returns a tuple of keyopt number and corresponding value based on the current attribute settings."""
+        #Returns a tuple of keyopt number and corresponding value based on the current attribute settings.#
 
         return ((2 ,SOLID185_KEYOPT_MAPPING[2][1].index(self.technology)),
                 (3, SOLID185_KEYOPT_MAPPING[3][1].index(self.layering)),
@@ -51,7 +55,7 @@ class Solid185(Etype):
                 (17, SOLID185_KEYOPT_MAPPING[17][1].index(self.extra_surface_output)))
 
     def set_keyopt(self, keyopt_number: int, value: str):
-        """Sets the attribute corresponding to the keyopt_number to the given value."""
+        #Sets the attribute corresponding to the keyopt_number to the given value.#
 
         # raise error if keyopt_number is invalid
         if keyopt_number not in SOLID185_KEYOPT_MAPPING:
@@ -65,6 +69,48 @@ class Solid185(Etype):
 
     def __repr__(self):
         return super().__repr__()
+"""
+
+#8-Node Structural Solid
+@dataclass
+class SOLID185(Etype):
+    @dataclass(frozen=True)
+    class TECHNOLOGY:   
+        FULL_INTEGRATION = 0
+        REDUCED_INTEGRATION = 1
+        ENHANCED_STRAIN = 2
+        SIMPLIFIED_ENHANCED_STRAIN = 3
+    @dataclass(frozen=True)
+    class LAYER_CONSTRUCTION: 
+        STRUCTURAL_SOLID = 0
+        LAYERED_SOLID = 1 
+    @dataclass(frozen=True)
+    class ELEMENT_FORMULATION: 
+        PURE_DISPLACEMENT = 0
+        MIXED_UP_FORMULATION = 1
+    # KEYOPTS
+    technology : int = TECHNOLOGY.FULL_INTEGRATION  # KEYOPT(2)
+    layer_construction : int = LAYER_CONSTRUCTION.STRUCTURAL_SOLID  # KEYOPT(3)
+    element_formulation : int = ELEMENT_FORMULATION.PURE_DISPLACEMENT   # KEYOPT(6)
+    # Real Constants
+    hourglass_stiffness_scaling_factor : float | None = None # If KEYOPT(2) == 1
+    
+    @property
+    def keyopts(self) -> tuple:
+        # KEYOPT Mapping
+        return (
+            (2, self.technology),
+            (3, self.layer_construction),
+            (6, self.element_formulation),
+        ) 
+    @property
+    def real_constants(self) -> tuple | None:
+        # Real Constant Mapping
+        return (
+            self.hourglass_stiffness_scaling_factor,
+        )
+       
+
 
 @dataclass
 class Solid186(Etype):
@@ -287,29 +333,70 @@ class Surf154(Etype):
 ### MPC184 & INPUTS
 #####################
 
-MPC184_KEYOPT_MAPPING = {
-    1 : ("behaviour", ("RigidLink", "RigidBeam", "Slider", "Revolute", "Universal", "Slot", "Point", "Translational", "Cylindrical", "Planar", "Weld", "Orient", "Spherical", "General", "Screw")),
-    2 : ("method", ("Direct Elimination", "Lagrange Multiplier", "Penalty Based Method")),
-    3 : ("configuration", ("x-axis revolute", "y-axis revolute", "displacement and rotational", "only displacement")),
-    5 : ("stress_stiffness", ("Include", "Exclude"))}
-
 @dataclass
-class MPC184(Etype):
+class MPC184_RIGID(Etype):
+    @dataclass(frozen=True)
+    class BEHAVIOUR:    # KEYOPT(1)
+        RIGID_LINK = 0
+        RIGID_BEAM = 1  
+    @dataclass(frozen=True)
+    class METHOD:   # KEYOPT(2)
+        DIERCT_ELIMINATION = 0
+        LAGRANGE_MULTIPLIER = 1
+    @dataclass(frozen=True)
+    class STRESS_STIFFNESS_CONTRIBUTION: #KEYOPT(5) for Rigid Beams
+        INCLUDE = 0     # default
+        EXCLUDE = 1
+
+    behaviour : int
+    method : int = METHOD.DIERCT_ELIMINATION
+    stress_stiffness_contribution = STRESS_STIFFNESS_CONTRIBUTION.INCLUDE
+
+    @property
+    def keyopts(self) -> tuple:
+        return (
+            (1, self.behaviour),
+            (2, self.method),
+            (5, self.stress_stiffness_contribution),
+        ) 
+    @property
+    def real_constants(self) -> tuple | None:
+        return None
     
-    name : str = "MPC184"
+@dataclass
+class MPC184_JOINT(Etype):
+    @dataclass(frozen=True)
+    class BEHAVIOUR:    # KEYOPT(1)
+        SLIDER = 3
+        REVOLUTE = 6
+        UNIVERSAL = 7
+        SLOT = 8
+        POINT_IN_PLANE = 9
+        TRANSLATIONAL = 10
+        CYLINDRICAL = 11
+        PLANAR = 12
+        WELD = 13
+        ORIENT = 14
+        SPHERICAL = 15
+        GENERAL = 16
+        SCREW = 17
+    @dataclass(frozen=True)
+    class METHOD:   # KEYOPT(2)
+        LAGRANGE_MULTIPLIER = 0 # default
+        PENALTY = 1
 
-    behaviour : int = 0
-    method : Literal["Direct Elimination", "Lagrange Multiplier", "Penalty Based Method"] = "Lagrange Multiplier"
-    contribution : Literal["Include", "Exclude"] = "Include"
+    behaviour : int
+    method : int = METHOD.LAGRANGE_MULTIPLIER
 
-    def get_keyopts(self) -> tuple:
-        return ((1, self.behaviour),
-                (2, ["Direct Elimination", "Lagrange Multiplier", "Penalty Based Method"].index(self.method)),
-                (3, ["Include", "Exclude"].index(self.contribution)))
-
-    def __repr__(self):
-        return super().__repr__()
-
+    @property
+    def keyopts(self) -> tuple:
+        return (
+            (1, self.behaviour),
+            (2, self.method),
+        )
+    @property
+    def real_constants(self) -> tuple | None:
+        return None
 
 ##################################
 ### CONTACT and TARGET Elements
@@ -528,7 +615,7 @@ class Conta175Material(Mat):
     mu_2 : float = 0.0
 
 @dataclass
-class Conta175(Etype):
+class CONTA175(Etype):
     """
     2-D/3-D Node-to-Surface Contact
     EXAMPLE :: 
@@ -536,8 +623,13 @@ class Conta175(Etype):
     keyo,cid,4,1               ! Deformable RBE3 style load (Force Distribution)
     keyo,cid,2,2               ! MPC style contact (MPC)
     """
+    @dataclass(frozen=True)
+    class DOF:  # KEYOPT(1)
+        UX_UY_UZ = 0
+        UX_UY_UZ_TEMP = 1
+        UX_UY_UZ_PRES = 2
+        UX_UY_UZ_PRESS_TEMP = 3
 
-    name : str = "CONTA175"
 
     dof : Literal["UX UY UZ", # Default
                   "UX UY UZ TEMP",
@@ -734,7 +826,6 @@ class Targe170(Etype):
                 keyopts.append((_keyopt_id, _keyopt_val))
         return keyopts or None
         
-
 ########################################################
 ### SECTION Definitons for the elements with two points
 ########################################################
@@ -811,7 +902,7 @@ class MPC184:
 
 VALID_ETYPES = {
     154: Surf154,
-    185: Solid185,
+#    185: Solid185,
     186: Solid186,
     187: Solid187,
     285: Solid285,
