@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 # -------------
 import numpy as np
+import pandas as pd
 
 # ---- VTK ----
 from vtkmodules.vtkCommonCore import (VTK_UNSTRUCTURED_GRID,
@@ -17,17 +18,15 @@ from vtkmodules.vtkCommonCore import (VTK_UNSTRUCTURED_GRID,
 from vtkmodules.util.data_model import (
     UnstructuredGrid,
     MultiBlockDataSet,
-    CompositeDataSetBase,
+    PolyData,
+    Points,
+    CellArray,
     CompositeDataSetAttributesIterator,
+    CompositeDataIterator,
 )
 from vtkmodules.vtkCommonDataModel import (
     vtkDataSet,
     vtkCompositeDataSet,
-    vtkUnstructuredGrid,
-    vtkMultiBlockDataSet,
-    vtkDataObjectTree,
-    vtkDataObjectTreeIndex,
-    vtkDataObjectTreeItem,
     vtkDataObjectTreeIterator,
 )
 from vtkmodules.util import colors
@@ -39,171 +38,118 @@ from vtkmodules.numpy_interface.vtk_partitioned_array import (
     VTKPartitionedArray,
 )
 from vtkmodules.numpy_interface.vtk_aos_array import (
-    VTKAOSArray
+    VTKAOSArray,
 )
+from vtkmodules.numpy_interface import vtk_partitioned_array as algs
+from vtkmodules.util.numpy_support import vtk_to_numpy
 # -------------
 
 from featoolbox.trame.app import Viewer
 from featoolbox.trame.scene import Scene
 from featoolbox.vtk.filters import MeshFilters
 from featoolbox.vtk.coordinates import CoordinateSystemManager
+from featoolbox.vtk.selections import MeshSelection
 
 
-class MultiBlockMeshTree():
+class MultiBlockMeshTree(MultiBlockDataSet):
 
     def __init__(self) -> None:
         """
         Creates a VTK MultiBlockDataSet hierarchy for the Mesh.
-        Branches are always a vtkMultiBlockDataSet, while the children are vtkDataSet.
         The first depth of the tree must only consist of Branches (vtkMultiBlockDataSet)
         In each depth, names must be unique.
 
         This class provides basic tree operations: Add, Remove, Get, and Set branches(MultiBlockDataSet) 
         or children(vtkDataSet).
-        Adds FieldData, CellData, PointData to the "Children datasets??" or "Parent MultiBlocks".
+        Adds FieldData, CellData, PointData to the "Parent MultiBlocks".
         """
-        self._root = MultiBlockDataSet()
+        #self = MultiBlockDataSet()
+
+    def find_block(self, name : str) -> Tuple[MultiBlockDataSet | None, int | None]:
+        # Find parent branch (MultiBlockDataSet) within the Root.
+        for idx in range(self.number_of_blocks):
+            block = self.GetBlock(idx)
+            metadata = self.GetMetaData(idx)
+            if (
+                isinstance(block, MultiBlockDataSet)
+                and metadata is not None
+                and metadata.Has(vtkCompositeDataSet.NAME())
+                and metadata.Get(vtkCompositeDataSet.NAME()) == name
+            ): 
+                return (block, idx)
+        else: return (None, None)
         
-    def find_block(self, name : str, parent_name : str | None = None) -> Tuple[MultiBlockDataSet | vtkDataSet | None,   # Child Types
-                                                                               MultiBlockDataSet | None,                # Parent Types
-                                                                               int | None
-                                                                               ]:            
+    def find_dataset(self, name : str, parent : MultiBlockDataSet) -> Tuple[vtkDataSet | None, int | None]:            
         """
-        Returns a tuple such as (child_reference or None, parent_reference or None)
-        first items reflects existence of the block.
         """
-
-        # If parent_name is None, then the search will be performed 
-        # at first depth root level to look for a branch.
-        parent : MultiBlockDataSet | None = None
-        child : MultiBlockDataSet | vtkDataSet | None = None
-        index : int | None = None
-        if parent_name is None: 
+        # Look for child node within the parent (MultiBlockDataSet)
+        for idx in range(parent.number_of_blocks):
+            block = parent.GetBlock(idx)
+            #if block is None: continue    # Skip empty blocks??
+            metadata = parent.GetMetaData(idx)
+            if (
+                isinstance(block, vtkDataSet)
+                and metadata is not None
+                and metadata.Has(vtkCompositeDataSet.NAME())
+                and metadata.Get(vtkCompositeDataSet.NAME()) == name
+            ): return (block, idx)                  
+        return (None, None)
             
-            for index in range(self._root.number_of_blocks):
-                branch = self._root.GetBlock(index)
-                if branch is None:
-                    continue    # Skip empty blocks
-                metadata = self._root.GetMetaData(index)
-                if (
-                    isinstance(branch, MultiBlockDataSet)    # Children must be vtkMultiBlockDataSet in the root branch!
-                    and metadata is not None
-                    and metadata.Has(vtkCompositeDataSet.NAME())
-                    and metadata.Get(vtkCompositeDataSet.NAME()) == name
-                ):
-                    child = branch
-            parent = self._root
-        else:
-            # If name and parent name are both specified,
-            # 1) Find parent branch (MultiBlockDataSet)
-            iter = vtkDataObjectTreeIterator(data_set=self._root, 
-                                             visit_only_leaves = False)
-            iter.InitTraversal()
-            while not iter.IsDoneWithTraversal():
-                if (isinstance(iter.current_data_object, MultiBlockDataSet)
-                    and iter.current_meta_data is not None
-                    and iter.current_meta_data.Has(vtkCompositeDataSet.NAME())
-                    and iter.current_meta_data.Get(vtkCompositeDataSet.NAME()) == parent_name): # root > branch : name
-                    parent = iter.current_data_object                                           # root > branch > branch : parent_name
-                    break                                                                       # root > branch > child : parent_name
-
-            if parent is not None:  # If Parent couldn't find, parent is None.
-
-                # 2) Look for child node at this level (MultiBlockDataSet or vtkDataSet)
-                for idx in range(parent.number_of_blocks):
-                    block = parent.GetBlock(idx)
-                    
-                    #if block is None: continue    # Skip empty blocks??
-
-                    metadata = parent.GetMetaData(idx)
-                    if (
-                        isinstance(block, (MultiBlockDataSet, vtkDataSet))
-                        and metadata is not None
-                        and metadata.Has(vtkCompositeDataSet.NAME())
-                        and metadata.Get(vtkCompositeDataSet.NAME()) == name
-                    ):
-                        child = block
-                        index = idx
-                        break
-
-        return (child, parent, index)
-            
-    def insert_branch(self, name : str, parent_name : str | None = None) -> MultiBlockDataSet:
+    def insert_branch(self, name : str) -> MultiBlockDataSet:
         """
-        name :: branch name (MultBlockDataSet)  
-        parent_name :: parent name to which the named branch belongs (MultiBlockDataSet) 
-        
-        In order to add a branch directly under the root, do not specify parent_name.
-
-        The method first checks if there is already a branch with name under parent.
+        Insert branch (MultiBlockDataSet) under the root.  
+        The method first checks if there is already a branch with the name.
         If the "name" exists, then raises an exception : "the {name} must be unique!".
-        If not, gets the parent reference and insert the new branch in it.
         """
-        if parent_name is None: 
-            # This is a branch search under root.
-            branch = self.find_block(name)[0]   
 
-            if branch is None:
-                index = self._root.number_of_blocks
-                branch = MultiBlockDataSet()
-                self._root.SetBlock(index, branch)
-                self._root.GetMetaData(index).Set(vtkCompositeDataSet.NAME(), name)
-            else: raise(Exception(f"Branch name {name} is already exist!"))
-        else:
-            branch, parent = self.find_block(parent_name)[:2] # by vtkDataObjectTreeIterator
+        block = self.find_block(name)[0]
 
-            if parent is not None:
-                if branch is None:
-                    index = parent.number_of_blocks
-                    branch = MultiBlockDataSet()
-                    parent.SetBlock(index, branch)
-                    parent.GetMetaData(index).Set(vtkCompositeDataSet.NAME(), name)
-                else: raise(Exception(f"Branch name {name} is already exist!"))
-            else: raise(Exception("Parent branch couldn't be find!"))
-        return branch
-        
-    def insert_dataset(self, dataset : vtkDataSet, name : str, parent_name : str) -> None:
+        if block is None: 
+            index = self.number_of_blocks
+            branch = MultiBlockDataSet()
+            self.SetBlock(index, branch)
+            self.GetMetaData(index).Set(vtkCompositeDataSet.NAME(), name)
+            return branch
+        else: raise(Exception(f"Branch name {name} is already exist!"))
+  
+    def insert_dataset(self, dataset : vtkDataSet, name : str, parent : MultiBlockDataSet) -> None:
         """
         name : child (vtkdataset) name
-        parent_name : branch (vtkMultiBlockDataSet) name
+        parent: branch (vtkMultiBlockDataSet)
 
         In the first tree depth, there could be only branches (vtkMultiBlockDataSet), so
         this method requires parent_name as well.
         """
-        # Find parent
-        child, parent = self.find_block(name, parent_name)[:2]
+        child = self.find_dataset(name, parent)[0]
 
-        if parent is not None:
-            if child is None:
-                index = parent.number_of_blocks   
-                parent.SetBlock(index, dataset)   # Add vtkDataSet at the end of a parent block
-                parent.GetMetaData(index).Set(vtkCompositeDataSet.NAME(), name)
-            else: raise(Exception(f"DataSet name {name} is already exist!"))
-        else: raise(Exception("Parent couldn't be find!"))
+        if child is None:
+            index = parent.number_of_blocks   
+            parent.SetBlock(index, dataset)   # Add vtkDataSet at the end of a parent block
+            parent.GetMetaData(index).Set(vtkCompositeDataSet.NAME(), name)
+        else: raise(Exception(f"DataSet name {name} is already exist!"))
+
+    def remove_block(self, name : str):
+
+        index = self.find_block(name)[1]
+        if index is not None:
+            self.RemoveBlock(index)
+        else: raise KeyError(f"block name {name} couldn't be found!")
                       
-    def remove(self, name : str, parent_name : str | None = None) -> None:
+    def remove_dataset(self, name : str, parent : MultiBlockDataSet) -> None:
         """
         Check for existence of the name within the parent branch.
         If it exists, then get the parent reference and run remove_block() method of it.
         If not, raise an exception : "the {name} has not been found!".
         """
-        if parent_name is None: 
-            # This is a branch search under root.
-            index = self.find_block(name)[2]
-            if index is not None:
-                self._root.RemoveBlock(index)
-            else: raise KeyError(f"block name {name} couldn't be found!")
-        else:
-            parent, index = self.find_block(name, parent_name)[1:]
-            if parent is not None and index is not None:
-                parent.RemoveBlock(index)
-            else: raise KeyError(f"block name {name} couldn't be found!")
-
+        index = self.find_dataset(name, parent)[1]
+        if index is not None:
+            parent.RemoveBlock(index)
+        else: raise KeyError(f"block name {name} couldn't be found!")
+        
+    """
     def add_dataset_field_data(self, name : str, parent_name : str, 
                                      data_name : str, data : str | int | float | np.ndarray):
-        """
-        
-        """
+                                     
         data_set = self.find_block(name, parent_name)[0]
 
         if data_set and isinstance(data_set, vtkDataSet):
@@ -238,23 +184,24 @@ class MultiBlockMeshTree():
             if isinstance(data, np.ndarray):
                 data_set.point_data[data_name] = data
             else: Exception("Data type is not suitable!")     
+    """
 
     def _partitioned_arrays(self, branch: MultiBlockDataSet, data_type : Literal["Point", "Cell"]): # Maybe "Field" later.
-
+        """Gets partitioned arrays for the given branch"""
         if data_type == "Cell":
             attributes = branch.cell_data
             if attributes is None:
-                raise ValueError(f"Branch {branch_name!r} has no cell-data attributes.")
+                raise ValueError(f"Branch has no cell-data attributes.")
     
             reference_name = "GlobalElementId"
             if reference_name not in attributes.keys():
                 raise ValueError(
-                    f"Branch {branch_name!r} has no {reference_name} cell-data array."
+                    f"Branch has no {reference_name} cell-data array."
                 )
             partitioned_array = attributes[reference_name]
             if not isinstance(partitioned_array, VTKPartitionedArray):
                 raise TypeError(
-                    f"Branch {branch_name!r} {reference_name} is not partitioned."
+                    f"Branch {reference_name} is not partitioned."
                 )
     
             partition_arrays: list[VTKAOSArray] = partitioned_array.arrays
@@ -263,17 +210,17 @@ class MultiBlockMeshTree():
         elif data_type == "Point":
             attributes = branch.point_data
             if attributes is None:
-                raise ValueError(f"Branch {branch_name!r} has no point-data attributes.")
+                raise ValueError(f"Branch has no point-data attributes.")
     
             reference_name = "GlobalNodeId"
             if reference_name not in attributes.keys():
                 raise ValueError(
-                    f"Branch {branch_name!r} has no {reference_name} point-data array."
+                    f"Branch has no {reference_name} point-data array."
                 )
             partitioned_array = attributes[reference_name]
             if not isinstance(partitioned_array, VTKPartitionedArray):
                 raise TypeError(
-                    f"Branch {branch_name!r} {reference_name} is not partitioned."
+                    f"Branch {reference_name} is not partitioned."
                 )
     
             partition_arrays: list[VTKAOSArray] = partitioned_array.arrays
@@ -323,9 +270,12 @@ class MultiBlockMeshTree():
         )
         branch.point_data[data_name] = point_data
 
+    def __iter__(self) -> CompositeDataIterator:
+        return super().__iter__()
+
     def __str__(self) -> str:
         lines: list[str] = []
-        iterator = vtkDataObjectTreeIterator(data_set=self._root)
+        iterator = vtkDataObjectTreeIterator(data_set=self)
         iterator.visit_only_leaves = False
         iterator.InitTraversal()
 
@@ -363,6 +313,14 @@ class MeshTree():
     Implementation of the tree structure of the Mesh.
     It establishes Mesh Object structure, and naming conventions such as Assembly, Component.
     It also performes itearative operations on the Tree.
+
+    Default Cell Data for the Assembly:
+    GlobalElementId
+    GlobalNodeId
+    ElementBlockIds??
+    Color
+    Opacity
+    Edge Visibility
     """
     def __init__(self) -> None:
         super().__init__()
@@ -376,7 +334,15 @@ class MeshTree():
         color_series.BuildLookupTable(self.lut, color_series.CATEGORICAL)
 
         # Main Branches
-        self.assembly : MultiBlockDataSet = self.mbds.insert_branch("Assembly")
+        self.assembly = self.mbds.insert_branch("Assembly")
+        self.free_nodes = self.mbds.insert_branch("FreeNodes")
+
+        """# Setup Global ID Attributes
+        self.mbds.cell_data["GlobalElementId"] = None
+        self.mbds.point_data["GlobalNodeId"] = None
+
+        # Setup Default Element Attributes
+        self._setup_default_attributes()"""
 
         # Results
         # Store active result data array names and associations.
@@ -385,21 +351,7 @@ class MeshTree():
         self._tensor_results = {}
         self._active_scalars_info : Tuple[str, Literal["Elemental", "Nodal"]] | None = None
         self._active_vectors_info : Tuple[str, Literal["Elemental", "Nodal"]] | None = None
-        self._active_tensors_info : Tuple[str, Literal["Elemental", "Nodal"]] | None = None
-
-    def _iter_components(self) -> Iterator[tuple[str, vtkDataSet]]:
-        for index in range(self.assembly.number_of_blocks):
-            component = self.assembly.GetBlock(index)
-            metadata = self.assembly.GetMetaData(index)
-            if not isinstance(component, vtkDataSet):
-                raise TypeError(f"Mesh component at index {index} is not a dataset.")
-            if (
-                metadata is None
-                or not metadata.Has(vtkCompositeDataSet.NAME())
-            ):
-                raise RuntimeError(f"Mesh component at index {index} has no name.")
-
-            yield metadata.Get(vtkCompositeDataSet.NAME()), component
+        self._active_tensors_info : Tuple[str, Literal["Elemental", "Nodal"]] | None = None        
 
     @property
     def number_of_components(self) -> int:
@@ -414,8 +366,64 @@ class MeshTree():
         return self.assembly.number_of_points
 
     @property
-    def global_element_ids(self) -> list:
-        return self.assembly.cell_data["GlobalElementId"].arrays
+    def max_global_element_id(self) -> np.ndarray:
+
+        max_id = max(self.assembly.cell_data["GlobalElementId"])
+        if max_id is not None:
+            return max_id
+        else: return np.ndarray((0), dtype=np.int64)
+
+    @property
+    def max_global_node_id(self) -> np.ndarray:
+
+        max_id = max(self.mbds.point_data["GlobalNodeId"])
+        if max_id is not None:
+            return max_id
+        else: return np.ndarray((0), dtype=np.int64)
+
+    @property
+    def global_element_ids(self) -> VTKPartitionedArray:
+        """Assembly GlobalElementId"""
+        return self.assembly.cell_data["GlobalElementId"]
+
+    @property
+    def global_node_ids(self) -> VTKPartitionedArray:
+        """Root GlobalNodeId"""
+        #return self.mbds.point_data["GlobalNodeId"].ravel()
+        return self.mbds.point_data["GlobalNodeId"] # VTKPartitionedArray
+
+    @property
+    def surface_ids(self) -> VTKPartitionedArray:
+        """VTK Surface Id MAPDL Equivalent by Mapping"""
+        pass
+
+    @property
+    def _point_coor_parts(self) -> VTKPartitionedArray:
+        """Root (Asssmebly+FreeNodes) Point Coordinates as VTKPartitions"""
+        return self.mbds.points.data
+    
+    @ property
+    def _connectivity(self) -> list[np.ndarray]:
+        connectivity = []
+        for idx in range(self.assembly.number_of_blocks):
+            ugrid = self.assembly.GetBlock(idx)
+            local_conn = ugrid.cells.connectivity_aos_array64
+            ugrid_offsets = ugrid.cells.offsets_aos_array64
+            conn_splitted = np.split(local_conn, ugrid_offsets)[1:-1]
+            ugrid_global_node_ids = ugrid.point_data["GlobalNodeId"]
+            global_conn = [ugrid_global_node_ids[conn] for conn in conn_splitted]
+            connectivity.append(global_conn)
+        return connectivity
+
+    @property
+    def _attributes(self): 
+        att_dict = {}
+        att_dict["ElementTypeIDs"] = self.mbds.cell_data["ElementTypeIDs"]
+        att_dict["MaterialIDs"] = self.mbds.cell_data["MaterialIDs"]
+        att_dict["RealConstantIDs"] = self.mbds.cell_data["RealConstantIDs"]
+        att_dict["EsysIDs"] = self.mbds.cell_data["EsysIDs"]
+        att_dict["SectionIDs"] = self.mbds.cell_data["SectionIDs"]
+        return att_dict
 
     def insert(self, name : str, ugrid : UnstructuredGrid) -> None:
         """
@@ -423,7 +431,7 @@ class MeshTree():
         Assign a default colour.
         """
         # Add a component (ugrid) into assembly.
-        self.mbds.insert_dataset(ugrid, name, "Assembly")
+        self.mbds.insert_dataset(ugrid, name, self.assembly)
 
         # Assign default color to ugrid from lut as a Field Data
         block_color_index = self.number_of_components % self.lut.GetNumberOfColors()
@@ -443,19 +451,37 @@ class MeshTree():
         Retrieve component object by its name.
         name : component name
         """
-        ugrid = self.mbds.find_block(name, parent_name="Assembly")[0]
+        ugrid = self.mbds.find_dataset(name, parent = self.assembly)[0]
         if ugrid is not None and isinstance(ugrid, UnstructuredGrid):
             return ugrid
         else: return None
 
     def cell_data(self, data_name : str, data : np.ndarray):
-        """Set cell data for Assembly (MultiBlockDataSet)"""
+        """Set cell data for all Assembly cells"""
         self.mbds.partitioned_cell_data(self.assembly, data_name, data)
 
     def point_data(self, data_name : str, data : np.ndarray):
-        """Set point data for Assembly (MultiBlockDataSet)"""
+        """Set point data for all Assembly points"""
         self.mbds.partitioned_point_data(self.assembly, data_name, data)
 
+    def get_cell_data(self, name) -> VTKPartitionedArray:
+        return self.mbds.cell_data[name]
+
+    def get_point_data(self, name) -> VTKPartitionedArray:
+        return self.mbds.point_data[name]
+
+    # ACTIVATE GLOBAL IDS
+    def _active_global_ids(self):
+        """Activate Global IDs for Nodes and Elements"""
+        if (
+            "GlobalElementId" in self.mbds.cell_data.keys()
+            and "GlobalNodeId" in self.mbds.point_data.keys()
+        ):
+            for dataset in self.mbds:
+                dataset.cell_data.SetActiveGlobalIds("GlobalElementId")
+                dataset.point_data.SetActiveGlobalIds("GlobalNodeId")
+        
+    # ACTIVE SCALARS
     def scalar_result_names(self, association : Literal["Elemental", "Nodal"]):
         """Returns scalar "result" names for the all Assembly (MultiBlockDataSet)"""
         if association == "Elemental":
@@ -490,6 +516,8 @@ class MeshTree():
                 return np.array(self.assembly.point_data[self._active_scalars_info[0]])
         else: return None
 
+    # ACTIVE VECTORS
+
     def vector_result_names(self, association : Literal["Elemental", "Nodal"]):
         """Returns the all Assembly (MultiBlockDataSet) vector "result" names."""
         if association == "Elemental":
@@ -514,6 +542,8 @@ class MeshTree():
                 comp.point_data.SetActiveVectors(name)
                 self._active_vectors_info = (name, "Nodal")
 
+    # ACTIVE NORMALS
+
     def _active_normals(self):
         pass
 
@@ -526,19 +556,40 @@ class MeshTree():
     def edge_visibility(self, comp : UnstructuredGrid, value : bool):
         comp.field_data["Edge Visibility"] = np.array([value], dtype=np.int32)
 
+    def insert_free_node(self, coordinates : np.ndarray) -> int:
+        """Add a free node in the global cs. Returns new node id"""
+        # Create point as PolyData
+        point = Points(data=coordinates)
+        vertex = CellArray(offsets=np.array([0, 1], dtype=np.int64),
+                           connectivity=np.array([0], dtype=np.int64))
+        free_node = PolyData(points=point, verts=vertex)
+
+        # Determine its global node id
+        id : np.ndarray = self.max_global_node_id + 1
+
+        # Assign point data as 
+        free_node.point_data["GlobalNodeId"] = np.array((id), dtype=np.int64)
+
+        # insert PolyData into "Free_Nodes" Block
+        self.mbds.insert_dataset(free_node, f"FreeNode-{id}", self.free_nodes)
+        
+        return int(id)
+
     def __str__(self):
         return str(self.mbds)
 
-class Mesh(MeshTree, MeshFilters):
+class Mesh(MeshTree, MeshFilters, MeshSelection):
     """
     ! All data that to be moved to the solver must be in the Mesh object.
     These include:
-        * ELEMENT TYPE IDs
-        * MATERIAL IDs
-        * REAL CONSTANT IDs
-        * ESYS IDs (Element CS)
-        * SECTION IDs
-        * TSHPAE IDs (Target Element Shape)
+        GlobalElementId
+        GlobalNodeId
+        ElementTypeIDs
+        MaterialIDs
+        RealConstantIDs
+        EsysIDs
+        SectionIDs
+        * TSHPAE IDs (Target Element Shape) ???
 
     ! Mesh stores id data and corresponding data should be stored in application level objects.
       So there must be id->object reference mapping in somewhere else.    
@@ -551,60 +602,85 @@ class Mesh(MeshTree, MeshFilters):
         self.element_sets : dict = {}
         self._surfaces : dict = {}
         self._cs_manager = CoordinateSystemManager()
+        self._spider_webs : dict = {} # Key:Dependent Node - Value:Independent Nodes
 
-    def attribute(self, att_type : Literal["ELEMENT_TYPE_ID", "MATERIAL_ID", "REAL_CONSTANT_ID", "ESYS_ID", "SECTION_ID"], 
-                        comp_name : str, 
+        # Default Attribute Names and Values
+
+
+    def attribute(self, att_type : Literal["ElementTypeIDs", "MaterialIDs", "RealConstantIDs", "EsysIDs", "SectionIDs"], 
+                        element_ids : np.ndarray, 
                         att_id : int,
                         ) -> None:
         """        
+        element_ids : Global Element IDs
+
         - All of these data will be assigned as cell_data to the individual components (not as assembly partitions)!!!
         - After assignment, the other comps in the assembly which don't have value for this attribute gets "NoneArray" value.
         - Check for "NoneArray" values for the assembly attribute partitions before IO writing.
         - If we assign value to the existent attribute of a dataset, it's overriden.
         - Number of IDs in att_ids must match the number of cells in the component.
         """
-        if att_type not in ["ELEMENT_TYPE_ID", "MATERIAL_ID", "REAL_CONSTANT_ID", "ESYS_ID", "SECTION_ID"]:
+        if att_type not in ["ElementTypeIDs", "MaterialIDs", "RealConstantIDs", "EsysIDs", "SectionIDs"]:
             raise ValueError("Attribute type must be one of the literal values!")
 
-        comp = self.component(comp_name) 
-        if comp is not None:
-            att_ids = np.full(shape=(1, comp.number_of_cells), fill_value=att_id, dtype=np.int64) 
-            comp.cell_data[att_type] = att_ids
-        else: raise KeyError("There is no such component name in the assembly!")
+        #attribute : VTKPartitionedArray = self.get_cell_data(att_type)
+        global_ids : VTKPartitionedArray = self.get_cell_data("GlobalElementId")
+        global_id_arrays = global_ids.arrays
+        available_ids = (
+            np.concatenate(global_id_arrays)
+            if global_id_arrays
+            else np.empty(0, dtype=np.int64)
+        )
+        missing_ids = np.setdiff1d(element_ids, available_ids)
+        if missing_ids.size:
+            raise ValueError(
+                f"Element IDs not found in mesh: {missing_ids.tolist()}"
+            )
+
+        indices = algs.where(algs.isin(global_ids, element_ids))
+
+        self.mbds.cell_data[att_type][indices] = att_id
 
     def coordinate_system(self, cs : CoordinateSystem):
         self._cs_manager.add(cs)
 
     @property
-    def element_types(self) -> dict:
+    def element_types(self) -> pd.DataFrame:
+        """ugird.cell_types_array"""
         return self.element_sets
 
-    @element_types.setter
-    def element_types(self, value):
-        if isinstance(value, dict):
-            self.element_sets = value
-        else:
-            raise TypeError("Value must be in type of dict!")
+    @property
+    def coordinates(self) -> pd.DataFrame:
+        """Return Global Node IDs : Nodal Coordinates"""
+        keys = self.global_node_ids
+        values = self._point_coor_parts # Node coordinates as VTKPartitionedArray
+        return pd.DataFrame(values, index=keys, columns=["X", "Y", "Z"])
 
     @property
-    def connectivity(self) -> dict:
-        pass
-
+    def connectivity(self) -> pd.DataFrame:
+        """Return Global Element IDs : Nodal Connectivity"""
+        partitions = (
+            pd.DataFrame(conn, index=element_ids)
+            for element_ids, conn in zip(
+                self.global_element_ids.arrays,
+                self._connectivity,
+                strict=True,
+            )
+        )
+        return pd.concat(partitions).astype("Int64")
+        
     @property
-    def element_attributes(self) -> dict:
-        pass
+    def element_attributes(self) -> pd.DataFrame:
+        """Return Global Element IDs : Element Attributes in Ansys Blocked Format"""
 
-    def material_data(self):
-        """
-        material name as field data
-        """
-        pass
+        data = self._attributes
+        element_ids = self.global_element_ids
+        return pd.DataFrame(
+            data=data,
+            index=pd.Index(element_ids, name="GlobalElementId"),
+        )
 
     def surface_cells(self, node_set : np.ndarray) -> dict:
-        pass
-
-    def add_free_node(self, x, y, z, cs) -> int:
-        """returns global node id"""
         pass
 
     def add_elemental_result(self, name : str, data : np.ndarray) -> None:
@@ -642,40 +718,42 @@ class Mesh(MeshTree, MeshFilters):
                    undeformed_mode : Literal["Transparent", "Outline"] = "Transparent",
                    wireframe : bool = False,
                    show_coordinate_systems : bool = False,
+                   show_free_nodes : bool = True,
                    ):
         """
         elements: 
         show_results:
         """
-        scene = Scene()
+        scene = Scene(self)
         scene.add_renderer()
 
         if show_results and deform:
-            scene.add_result_mesh(self, deform=True, scale_factor=deform_scale)
-            scene.add_vector_glyphs(self, vector_scale)
+            scene.add_result_mesh(deform=True, scale_factor=deform_scale)
+            scene.add_vector_glyphs(vector_scale)
             if show_underformed:
                 if undeformed_mode == "Transparent":
-                    scene.add_undeformed_mesh(self)
+                    scene.add_undeformed_mesh()
                 else:
-                    scene.add_mesh_outline(self)
+                    scene.add_mesh_outline()
                   
         elif deform: # show deformed mesh without results
-            scene.add_mesh(self, deform=True, scale_factor=deform_scale)
+            scene.add_mesh(deform=True, scale_factor=deform_scale)
             if show_underformed:
                 if undeformed_mode == "Transparent":
-                    scene.add_undeformed_mesh(self)
+                    scene.add_undeformed_mesh()
                 else:
-                    scene.add_mesh_outline(self)
+                    scene.add_mesh_outline()
         else: # show only mesh
-            scene.add_mesh(self, wireframe=wireframe)
+            scene.add_mesh(wireframe=wireframe)
 
         if show_coordinate_systems:
-            scene.add_coordinate_system(self)
+            scene.add_coordinate_system()
+
+        if show_free_nodes:
+            scene.add_free_node()
 
 
         app = Viewer(vtk_scene=scene)
 
         app.server.start(host="0.0.0.0",
                          port=8080)
-
-

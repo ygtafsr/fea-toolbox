@@ -406,21 +406,21 @@ class Model:
         return mat
 
     def _assign_attribute(self, comp_name : str, attribute : attributes.Etype | 
-                                                            attributes.Real | 
-                                                            attributes.Section |
-                                                            CoordinateSystem):
+                                                             attributes.Real | 
+                                                             attributes.Section |
+                                                             CoordinateSystem):
         """
         Assign element attribute IDs to the Mesh Assembly Components.
         It assigns the same id all the cells in the component (ugrid).
         """
         if isinstance(attribute, attributes.Etype):
-            self.mesh.attribute("ELEMENT_TYPE_ID", comp_name, attribute.midx)
+            self.mesh.attribute("ElementTypeId", comp_name, attribute.midx)
         elif isinstance(attribute, attributes.Real):
-            self.mesh.attribute("REAL_CONSTANT_ID", comp_name, attribute.midx)
+            self.mesh.attribute("RealConstantId", comp_name, attribute.midx)
         elif isinstance(attribute, attributes.Section):
-            self.mesh.attribute("SECTION_ID", comp_name, attribute.midx)
+            self.mesh.attribute("SectionId", comp_name, attribute.midx)
         elif isinstance(attribute, CoordinateSystem):
-            self.mesh.attribute("ESYS_ID", comp_name, attribute.midx)
+            self.mesh.attribute("EsysId", comp_name, attribute.midx)
 
     def add_coordinate_system(self, 
                               name : str,
@@ -517,8 +517,7 @@ class Model:
 
     def add_pilot_node(self, 
                        name : str, 
-                       x : float, y : float, z : float, 
-                       local_cs : CoordinateSystem | None = None,
+                       coordinates : Tuple[float, float, float], 
                        ) -> PilotNode:
 
         nset = self.add_node_set(name=name, nodes=None, ignore_at_execution=True)

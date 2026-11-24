@@ -5,6 +5,10 @@ if TYPE_CHECKING:
     from featoolbox.mesh import Mesh
     from vtkmodules.util.data_model import MultiBlockDataSet, PolyData
 
+from featoolbox.vtk.visuals_factory import(
+    vector,
+)
+
 import numpy as np
 
 # VTK native OpenGL backend
@@ -45,6 +49,10 @@ from vtkmodules.vtkCommonDataModel import vtkDataSet
 from vtkmodules.util import (
     vtkConstants,
     colors
+)
+from vtkmodules.vtkFiltersSources import (
+    vtkArrowSource,
+    vtkSphereSource
 )
 
 
@@ -127,10 +135,13 @@ class CustomInteractor(vtkInteractorStyleRubberBand3D):
 
 class Scene():
     """
-    Scene = vtkRenderWindow
+    This is where renderwindow, renderers, basic scene actors, 
+    visual data (from mesh) and their visual representations come together.
     """
 
-    def __init__(self):
+    def __init__(self, mesh):
+
+        self.mesh = mesh
 
         self.render_window = vtkRenderWindow(size=(1000, 700))
         self.render_window.SetOffScreenRendering(1) # Important for in-browser rendering !!!!
@@ -225,19 +236,19 @@ class Scene():
         
         return scalar_bar
 
-    def add_mesh(self, mesh : Mesh, 
-                       wireframe : bool = False,
+    def add_mesh(self, 
+                 wireframe : bool = False,
                        deform : bool = False,
                        scale_factor : float = 1.0,
                        ):
 
         # Mesh can deform without result
         if deform:
-            if "Displacement" in mesh.vector_result_names(association="Nodal"):
-                mbds = mesh.warp_vector(scale_factor)
+            if "Displacement" in self.mesh.vector_result_names(association="Nodal"):
+                mbds = self.mesh.warp_vector(scale_factor)
             else: raise ValueError("There is no Nodal Displacement Data!")
         else: 
-            mbds = mesh.assembly
+            mbds = self.mesh.assembly
 
         # Add mesh components to the last renderer
         for idx in range(mbds.number_of_blocks):
@@ -249,7 +260,7 @@ class Scene():
             prop = vtkProperty()
             prop.edge_color = colors.black
             prop.color = component.field_data['Color']
-            prop.line_width = 0.5
+            prop.line_width = 0.4
             prop.edge_visibility = bool(component.field_data['Edge Visibility'])
             prop.opacity = float(component.field_data['Opacity'][0])
 
@@ -258,20 +269,19 @@ class Scene():
             self.renderer.AddActor(actor)
 
     def add_result_mesh(self, 
-                        mesh : Mesh,
                         deform : bool = True,
                         scale_factor : float = 1.0,
                         ):
 
-        arrays = mesh.active_scalars_array
+        arrays = self.mesh.active_scalars_array
         self.add_scalar_bar((float(np.min(arrays)), float(np.max(arrays))))
 
         if deform:
-            if "Displacement" in mesh.vector_result_names(association="Nodal"):
-                mbds = mesh.warp_vector(scale_factor)
+            if "Displacement" in self.mesh.vector_result_names(association="Nodal"):
+                mbds = self.mesh.warp_vector(scale_factor)
             else: raise ValueError("There is no Nodal Displacement Data!")
         else: 
-            mbds = mesh.assembly
+            mbds = self.mesh.assembly
 
         for idx in range(mbds.number_of_blocks):
 
@@ -283,14 +293,14 @@ class Scene():
             prop.edge_color = colors.black
             prop.line_width = 0.5
 
-            if mesh._active_scalars_info is not None:
+            if self.mesh._active_scalars_info is not None:
 
-                if mesh._active_scalars_info[1] == "Elemental":
+                if self.mesh._active_scalars_info[1] == "Elemental":
                     mapper.SetScalarModeToUseCellData()
-                elif mesh._active_scalars_info[1] == "Nodal":
+                elif self.mesh._active_scalars_info[1] == "Nodal":
                     mapper.SetScalarModeToUsePointData()
 
-            if mesh._active_tensors_info is not None:
+            if self.mesh._active_tensors_info is not None:
                 pass
  
             mapper.lookup_table = self.lookup_table
@@ -301,14 +311,14 @@ class Scene():
             actor.property = prop
             self.renderer.AddActor(actor)
 
-    def add_undeformed_mesh(self, mesh : Mesh):
+    def add_undeformed_mesh(self):
         # Add undeformed mesh components to the last renderer
         # Shows components transparent and grey
 
         # implement a surface filter for MultiBlockDataSet!!!
 
-        for idx in range(mesh.assembly.number_of_blocks):
-            component = mesh.assembly.GetBlock(idx) # ugrid
+        for idx in range(self.mesh.assembly.number_of_blocks):
+            component = self.mesh.assembly.GetBlock(idx) # ugrid
             mapper = vtkDataSetMapper(input_data=component)
             prop = vtkProperty()
             prop.color = colors.grey
@@ -318,20 +328,20 @@ class Scene():
             actor.property = prop
             self.renderer.AddActor(actor)
         
-    def add_mesh_outline(self, mesh : Mesh):
+    def add_mesh_outline(self):
 
-        feature_edges = mesh.feature_edges()
+        feature_edges = self.mesh.feature_edges()
         outline_mapper = vtkPolyDataMapper(input_connection=feature_edges.output_port)
         outline_actor = vtkActor(mapper=outline_mapper)
         outline_actor.property.color = colors.black
         self.renderer.AddActor(outline_actor)
 
-    def add_vector_glyphs(self, mesh : Mesh, scale_factor : float = 1.0):
+    def add_vector_glyphs(self, scale_factor : float = 1.0):
 
         # Method-1 :: Use vtkGlyph3D iteratively.
-        if mesh._active_vectors_info is not None:
+        if self.mesh._active_vectors_info is not None:
 
-            glyphs = mesh.glyph_filter(scale_factor)
+            glyphs = self.mesh.glyph_filter(scale_factor)
 
             for glyph in glyphs:
                 poly_mapper = vtkPolyDataMapper(input_connection=glyph.GetOutputPort())
@@ -348,12 +358,38 @@ class Scene():
         self.renderer.AddActor(glyph_actor)
         """
 
-    def add_coordinate_system(self, mesh : Mesh):
+    def add_coordinate_system(self):
 
-        cs_manager = mesh._cs_manager
+        cs_manager = self.mesh._cs_manager
 
         for cs_view in cs_manager.views.values():
             self.renderer.AddActor(cs_view.axes)
+
+    def add_free_node(self):
+
+        free_node_coordinates = self.mesh.free_nodes.points.data.reshape((-1, 3))
+        for coordinate in free_node_coordinates:
+
+            sphereSource = vtkSphereSource(center=coordinate, 
+                                           radius=0.6,
+                                           theta_resolution=16,
+                                           phi_resolution=16,
+                                           )
+            sphereSource.Update()
+
+            #input_data = PolyData()
+            #input_data.ShallowCopy(sphereSource.GetOutput())
+            mapper = vtkPolyDataMapper(input_data=sphereSource.GetOutput())
+            actor = vtkActor(mapper=mapper)
+            actor.property.opacity = 1.0
+            actor.property.color = colors.banana
+            self.renderer.AddActor(actor)
+
+    def add_spider_web(self):
+        pass
+
+    def add_force_vector(self):
+        pass
 
     def plot(self):
 

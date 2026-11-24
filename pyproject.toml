@@ -17,7 +17,7 @@ dependencies = [
     "matplotlib==3.11.2",
     "numpy==2.5.4",
     "pandas==3.0.6",
-    "vtk==9.7.1",
+    "vtk==9.7.2",
     "ipykernel==7.4.0",
 ]
 

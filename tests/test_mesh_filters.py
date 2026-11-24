@@ -72,6 +72,84 @@ def test_feature_edges_processes_multiblock_assembly() -> None:
     assert output.GetNumberOfCells() == 12
 
 
+def test_connectivity_includes_all_partitions(monkeypatch) -> None:
+    mesh = Mesh()
+    monkeypatch.setattr(
+        Mesh,
+        "global_element_ids",
+        property(
+            lambda _: SimpleNamespace(
+                arrays=[np.array([10]), np.array([20])]
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        Mesh,
+        "_assembly_connectivity",
+        property(
+            lambda _: [
+                [np.array([1, 2, 3])],
+                [np.array([4, 5, 6])],
+            ]
+        ),
+    )
+
+    connectivity = mesh.connectivity
+
+    assert connectivity.index.tolist() == [10, 20]
+    assert connectivity.values.tolist() == [[1, 2, 3], [4, 5, 6]]
+
+
+def test_element_attributes_builds_rows_from_partitioned_arrays(monkeypatch) -> None:
+    mesh = Mesh()
+    partitions = [
+        [np.array([1, 2]), np.array([3])],
+        [np.array([10, 20]), np.array([30])],
+        [np.array([100, 200]), np.array([300])],
+        [np.array([0, 0]), np.array([1])],
+        [np.array([4, 4]), np.array([5])],
+    ]
+    monkeypatch.setattr(
+        Mesh,
+        "_attributes",
+        property(
+            lambda _: [
+                SimpleNamespace(arrays=arrays) for arrays in partitions
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        Mesh,
+        "global_element_ids",
+        property(
+            lambda _: SimpleNamespace(
+                arrays=[np.array([101, 102]), np.array([103])]
+            )
+        ),
+    )
+
+    attributes = mesh.element_attributes
+
+    assert attributes.index.tolist() == [101, 102, 103]
+    assert attributes["ElementTypeIDs"].tolist() == [1, 2, 3]
+    assert attributes["MaterialIDs"].tolist() == [10, 20, 30]
+    assert attributes["SectionIDs"].tolist() == [4, 4, 5]
+
+
+def test_attribute_rejects_element_ids_missing_from_mesh(monkeypatch) -> None:
+    mesh = Mesh()
+    monkeypatch.setattr(
+        mesh,
+        "get_cell_data",
+        lambda _: SimpleNamespace(arrays=[np.array([10, 20])]),
+    )
+
+    with pytest.raises(
+        ValueError, match=r"Element IDs not found in mesh: \[30\]"
+    ):
+        mesh.attribute("MaterialIDs", np.array([10, 30]), att_id=5)
+
+
 def test_plot_adds_mesh_to_renderer_by_default(monkeypatch) -> None:
     mesh = Mesh()
     mesh.insert("part", _tetrahedron())
